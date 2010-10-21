@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 #   humblexmlparse.py - a variant of simplexmlparse
 #                       <http://evanjones.ca/software/simplexmlparse.html>
@@ -17,6 +17,22 @@
 #   You should have received a copy of the GNU Affero General Public License
 #   along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+'''
+A parser parsing XML into python objects, based on simplexmlparse by Evan 
+Jones <http://evanjones.ca/software/simplexmlparse.html>
+
+Usage:
+    >>> from humblexmlparse import TemplateParser, parse_xml
+    >>> template = TemplateParser(""" \
+        <root xmlns:parse="http://xml.par.se"> \
+          <item name="required" parse:count="1"/> \
+        </root>""", 'http://xml.par.se')
+    >>> root = parse_xml(template, \
+            """<root><item name='Hello, world!'/></root>""")
+    >>> print root.item["name"]
+    Hello, world!
+'''
+
 import xml.parsers.expat
 
 # try:
@@ -29,171 +45,80 @@ class Count:
     class Any:      pass
     class Positive: pass
 
+    ALL = {'1':One, '?': Optional, '+': Positive, '*': Any}
 
-str2count = {
-    '1': Count.One,
-    '?': Count.Optional,
-    '+': Count.Positive,
-    '*': Count.Any}
+    @classmethod
+    def is_single(cls, template_node):
+        return template_node._count in [cls.One, cls.Optional]
 
-attr2count = {
-    'required': Count.One,
-    'optional': Count.Optional}
+    @classmethod
+    def is_required(cls, template_node):
+        return template_node._count in [cls.One, cls.Positive]
 
+    @classmethod
+    def ofAttribute(cls, count):
+        return cls.One if count == 'required' else cls.Optional
 
+    @classmethod
+    def ofNode(cls, attrs, namespace):
+        return cls.ALL[attrs.get('%s count'%(namespace), '?')]
 
-ERROR_CODES = {
-    'INVALID_COUNT':
-        """Element '%s' has an invalid parse count attribute value: '%s' (must be '1', '?', '+', or '*')""",
-    'INVALID_ATTRIBUTES':
-        "Element '%s' is not permitted to have attributes %s",
-    'INVALID_CHILD':
-        "Element '%s' is not permitted to have child element '%s'",
-    'MULTIPLE_CHILD':
-        "Element '%s' cannot contain multiple '%s' elements",
-    'INVALID_ROOT':
-        "Invalid root tag '%s' (must be '%s')",
-    'MISSING_ATTRIBUTES':
-        "Element '%s' is missing required attributes %s",
-    'MISSING_CHILDREN':
-        "Element '%s' is missing required child elements %s",
-    'CONTAINS_TEXT':
-        "Element '%s' cannot contain non-whitespace text",
-
-}
 
 class XmlParseError(Exception):
 
-    def __init__(self, line, column):
-        self.line = line
-        self.column = column
+    def __init__(self, parser, *args):
+        self.line = parser.parser.CurrentLineNumber
+        self.column = parser.parser.CurrentColumnNumber
+
+        if hasattr(self, 'format_args'):
+            args = self.format_args(parser, *args)
+
+        self.error = self.ERROR%args
+
 
     def __str__(self):
         return "XmlParseError: %s: line %d, column %d"%(
             self.error, self.line, self.column)
 
-class InvalidCountAttributeError(XmlParseError):
-    def __init__(self, name, value, line, column):
-        XmlParseError.__init__(self, line, column)
-        self.error = ERROR_CODES['INVALID_COUNT']%(name, value)
 
-class InvalidAttributesError(XmlParseError):
-    def __init__(self, name, attributes, line, column):
-        XmlParseError.__init__(self, line, column)
-        attributes = ','.join(["'"+attr+"'" for attr in attributes])
-        self.error = ERROR_CODES['INVALID_ATTRIBUTES']%(name, attributes)
+class ConcatMixin:
+    def format_args(self, parser, name, elems):
+        return (name, ','.join(["'"+e+"'" for e in elems]))
+
+
+class InvalidCountAttributeError(XmlParseError):
+
+    ERROR = """Element '%s' has an invalid parse count attribute value: '%s' (must be '1', '?', '+', or '*')"""
+
+    def format_args(self, parser, name, attrs):
+        return (name, attrs['%s count'%(parser.parser_namespace)])
+
+class RedefineChildError(XmlParseError):
+    ERROR = """Element '%s' has already been defined"""
+
+class InvalidAttributesError(XmlParseError, ConcatMixin):
+    ERROR = "Element '%s' is not permitted to have attributes %s"
 
 class InvalidChildError(XmlParseError):
-    def __init__(self, name, child, line, column):
-        XmlParseError.__init__(self, line, column)
-        self.error = ERROR_CODES['INVALID_CHILD']%(name, child)
+    ERROR = "Element '%s' is not permitted to have child element '%s'"
 
-class MultipleChildError(XmlParseError):
-    def __init__(self, name, child, line, column):
-        XmlParseError.__init__(self, line, column)
-        self.error = ERROR_CODES['INVALID_CHILD']%(name, child)
+class DuplicateChildError(XmlParseError):
+    ERROR = "Element '%s' cannot contain more than one '%s' elements"
 
 class InvalidRootTagError(XmlParseError):
-    def __init__(self, name, value, line, column):
-         XmlParseError.__init__(self, line, column)
-         self.error = ERROR_CODES['INVALID_ROOT']%(value, name)
+    ERROR = "Invalid root tag '%s' (must be '%s')"
 
-class MissingAttributesError(XmlParseError):
-    def __init__(self, name, attributes, line, column):
-        XmlParseError.__init__(self, line, column)
-        attributes = ','.join(["'"+attr+"'" for attr in attributes])
-        self.error = ERROR_CODES['MISSING_ATTRIBUTES']%(name, attributes)
+class MissingAttributesError(XmlParseError, ConcatMixin):
+    ERROR = "Element '%s' is missing required attributes %s"
 
-class MissingChildrenError(XmlParseError):
-    def __init__(self, name, children, line, column):
-        XmlParseError.__init__(self, line, column)
-        children = ','.join(["'"+child+"'" for child in children])
-        self.error = ERROR_CODES['MISSING_CHILDREN']%(name, children)
+class MissingChildrenError(XmlParseError, ConcatMixin):
+    ERROR = "Element '%s' is missing required child elements %s"
 
 class ContainsTextError(XmlParseError):
-    def __init__(self, name, line, column):
-        XmlParseError.__init__(self, line, column)
-        self.error = ERROR_CODES['CONTAINS_TEXT']%(name)
+    ERROR = "Element '%s' cannot contain non-whitespace text"
 
 
-class TemplateNode:
-
-    def __init__(self, name, count):
-        self.name = name
-        self.count = count
-        self.contains_text = False
-
-        self.attributes = {}
-        self.children = {}
-
-    def add_attribute(self, name, count):
-        self.attributes[name] = count
-
-    def add_child(self, childnode):
-        name = childnode.name
-        self.children[name] = childnode
-
-
-class ExpatWrapper:
-    def __init__(self):
-        self.parser = xml.parsers.expat.ParserCreate(namespace_separator=' ')
-        self.parser.StartElementHandler = self.start_element_handler
-        self.parser.EndElementHandler = self.end_element_handler
-        self.parser.CharacterDataHandler = self.character_data_handler
-
-
-class TemplateParser(ExpatWrapper):
-
-    def __init__(self, template_string, parser_namespace):
-        ExpatWrapper.__init__(self)
-
-        self.parser_namespace = parser_namespace
-        self.node_stack = []
-        self.root = None
-
-        self.parser.Parse(template_string, True)
-
-
-    def start_element_handler(self, name, attributes):
-        try:
-            count = str2count[
-                attributes.get('%s count'%(self.parser_namespace), '?')]
-        except KeyError:
-            raise InvalidCountAttributeError(
-                name,
-                attributes['%s count'%(self.parser_namespace)],
-                self.parser.CurrentLineNumber,
-                self.parser.CurrentColumnNumber)
-
-        node = TemplateNode(name, count)
-
-        for name in attributes:
-            if not name.startswith(self.parser_namespace):
-                count = attr2count.get(attributes[name], Count.Optional)
-                node.add_attribute(name, count)
-
-        self.node_stack.append(node)
-
-
-    def end_element_handler(self, name):
-        node = self.node_stack.pop()
-        try:
-            self.node_stack[-1].add_child(node)
-        except IndexError:
-            self.root = node
-
-
-    def character_data_handler(self, data):
-        if not data.isspace():
-            self.node_stack[-1].contains_text = True
-
-
-class ElementNode:
-
-    def __init__(self):
-        self._attributes = {}
-        self._text = ""
-
+class AttributeDict:
     def __getitem__(self, key):
         return self._attributes[key]
 
@@ -210,8 +135,136 @@ class ElementNode:
         return iter(self._attributes)
 
 
+class ElementNode(AttributeDict):
 
-class SimpleXmlParser(ExpatWrapper):
+    def __init__(self, initial):
+        self._attributes = dict(initial)
+        self._text = ""
+
+    def _put_node(self, name, template_node, node):
+        if Count.is_single(template_node):
+            setattr(self, name, node)
+        else:
+            setattr(self, name, getattr(self, name, []) + [node])
+
+
+class TemplateNode(AttributeDict):
+
+    def __init__(self, name, count, initial):
+        self._name = name
+        self._count = count
+        self._contains_text = False
+        self._attributes = dict(initial)
+
+    def _check_attrs(self, parser, attrs):
+        missing_attrs = [ 
+            attr for attr,count in self._attributes.items()
+                if count is Count.One and attr not in attrs ]
+
+        if any(missing_attrs):
+            raise MissingAttributesError(parser, self._name, missing_attrs)
+
+        invalid_attrs = [ attr for attr in attrs if attr not in self ]
+        if parser.strict and any(invalid_attrs):
+            raise InvalidAttributesError(parser, self._name, invalid_attrs)
+
+        return [ (attr, attrs.get(attr, None)) 
+                   for attr in self 
+                       if attr not in invalid_attrs ]
+
+    def _make_node(self, parser, attrs): 
+        return ElementNode(self._check_attrs(parser, attrs))
+
+    def _children(self, is_required):
+        for name, template_node in self.__dict__.items():
+            if not name.startswith('_'):
+                if Count.is_required(template_node) == is_required:
+                    yield (name, template_node)
+
+    def _check_children(self, parser, node):
+        missing_children = [
+            name for (name, template_node) in self._children(True)
+                if not hasattr(node, name)]
+
+        if any(missing_children):
+            raise MissingChildrenError(parser, self._name, missing_children)
+
+        node.__dict__.update(
+            [ (name, None if Count.is_single(template_node) else []) 
+                for (name, template_node) in self._children(False) 
+                    if not hasattr(node, name) ])
+
+
+class ExpatWrapper:
+
+    def __init__(self):
+        self.parser = xml.parsers.expat.ParserCreate(namespace_separator=' ')
+        self.parser.StartElementHandler = self.start_element_handler
+        self.parser.EndElementHandler = self.end_element_handler
+        self.parser.CharacterDataHandler = self.character_data_handler
+
+    def start_element_handler(self, name, attributes):
+        self.handlers = self.handlers[0](name, attributes) or self.handlers
+
+    def end_element_handler(self, name):
+        self.handlers = self.handlers[1](name) or self.handlers
+
+    def character_data_handler(self, data):
+        self.handlers = self.handlers[2](data) or self.handlers
+
+    def get_initial_handlers(self):
+        raise NotImplementedError
+
+
+class TemplateParser(ExpatWrapper):
+
+    def __init__(self, template_string, parser_namespace):
+        ExpatWrapper.__init__(self)
+
+        self.parser_namespace = parser_namespace
+        self.node_stack = []
+        self.root = None
+
+        self.handlers = self.get_initial_handlers()
+        self.parser.Parse(template_string, True)
+
+
+    def get_initial_handlers(self):
+        return (self.on_start, self.on_end, self.on_data)
+
+
+    def on_start(self, name, attrs):
+        try:
+            count = Count.ofNode(attrs, self.parser_namespace)
+        except KeyError:
+            raise InvalidCountAttributeError(self, name, attrs)
+
+        self.node_stack.append(TemplateNode(
+            name, count, 
+            [ (name, Count.ofAttribute(attrs[name]) ) 
+                for name in attrs
+                    if not name.startswith(self.parser_namespace+' ')]))
+
+
+    def on_end(self, name):
+        node = self.node_stack.pop()
+        try:
+            parent = self.node_stack[-1]
+            if hasattr(parent, name):
+                raise RedefineChildError(self, name)
+            setattr(parent, name, node)
+        except IndexError:
+            self.root = node
+            return (None, None, None)
+
+
+    def on_data(self, data):
+        if not data.isspace():
+            self.node_stack[-1]._contains_text = True
+
+
+
+class HumbleXmlParser(ExpatWrapper):
 
     def __init__(self, template, strict=True):
         ExpatWrapper.__init__(self)
@@ -223,152 +276,107 @@ class SimpleXmlParser(ExpatWrapper):
     def parse(self, data):
         self.node_stack = []
         self.template_node_stack = []
-
         self.root = None
-        self.skip = False
 
+        self.handlers = self.get_initial_handlers()
         self.parser.Parse(data, True)
+
         return self.root
 
 
-    def start_element_handler(self, name, attributes):
-        if self.skip:
+    @property
+    def top_node(self):
+        return self.node_stack[-1]
+
+    @property
+    def top_template(self):
+        return self.template_node_stack[-1]
+
+    def get_initial_handlers(self):
+        return (self.on_start_root_tag, None, None)
+
+
+    def on_start_root_tag(self, name, attrs):
+        if name != self.template_root._name:
+            raise InvalidRootTagError(self, name, self.template_root._name)
+
+        self.template_node_stack.append(self.template_root)
+        self.node_stack.append(self.template_root._make_node(self, attrs))
+
+        return (self.on_start, self.on_end, self.on_data)
+
+
+    def on_start(self, name, attrs):
+        try:
+            template_node = getattr(self.top_template, name)
+        except AttributeError:
+            if self.strict:
+                raise InvalidChildError(self, self.top_template._name, name)
+
             self.node_stack.append(None)
-            return
+            return (self.skip_start, self.skip_end, self.skip_data)
 
-        if not self.node_stack:
-            if name != self.template_root.name:
-                raise InvalidRootTagError(
-                    self.template_root.name,
-                    name,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
-
-            template_node = self.template_root
-        else:
-            try:
-                template_node = self.template_node_stack[-1].children[name]
-            except KeyError:
-                if self.strict:
-                    raise InvalidChildError(
-                        self.template_node_stack[-1].name,
-                        name,
-                        self.parser.CurrentLineNumber,
-                        self.parser.CurrentColumnNumber)
-                else:
-                    self.skip = True
-                    self.node_stack.append(None)
-                    return
-
-            if hasattr(self.node_stack[-1], name):
-                raise MultipleChildError(
-                    self.template_node_stack[-1].name,
-                    name,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
+        if Count.is_single(template_node) and hasattr(self.top_node, name):
+            raise DuplicateChildError(self, self.top_template._name, name)
 
         self.template_node_stack.append(template_node)
-
-        node = ElementNode()
-
-        invalid_attributes = [ name_
-            for name_ in attributes
-                if name_ not in template_node.attributes]
-        if self.strict and any(invalid_attributes):
-            raise InvalidAttributesError(
-                    template_node.name,
-                    invalid_attributes,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
-
-        missing_attributes = [ name_
-            for name_ in template_node.attributes
-                if template_node.attributes[name_] is Count.One and
-                   name_ not in attributes]
-        if any(missing_attributes):
-            raise MissingAttributesError(
-                    template_node.name,
-                    missing_attributes,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
-        
-        # XXX
-        for name_ in template_node.attributes:
-            if name_ not in attributes:
-                attributes[name_] = None
-
-        node._attributes.update(attributes)
-
-        self.node_stack.append(node)
+        self.node_stack.append(template_node._make_node(self, attrs))
 
 
-    def end_element_handler(self, name):
-        if self.skip:
-            self.node_stack.pop()
-
-            if self.node_stack[-1]:
-                self.skip = False
-            return
-
-        template_node = self.template_node_stack.pop()
+    def on_end(self, name):
         node = self.node_stack.pop()
+        template_node = self.template_node_stack.pop()
 
-        missing_children = [ name_
-            for name_ in template_node.children
-                if template_node.children[name_].count
-                     in [Count.One, Count.Positive] and
-                   name_ not in node.__dict__]
-        if any(missing_children):
-            raise MissingChildrenError(
-                    template_node.name,
-                    missing_children,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
-        
-        # XXX
-        for name_ in template_node.children:
-            if name_ not in node.__dict__:
-                if template_node.children[name_].count is Count.Optional:
-                    setattr(node, name_, None)
-                elif template_node.children[name_].count is Count.Any:
-                    setattr(node, name_, [])
-
+        template_node._check_children(self, node)
         try:
-            if template_node.count in [Count.One, Count.Optional]:
-                setattr(self.node_stack[-1], name, node)
-            else:
-                nodes = getattr(self.node_stack[-1], name, [])
-                nodes.append(node)
-                setattr(self.node_stack[-1], name, nodes)
-
+            self.top_node._put_node(name, template_node, node)
         except IndexError:
             self.root = node
+            return (None, None, None)
 
 
-    def character_data_handler(self, data):
-        if self.skip:
-            return
-        # data is never ""
+    def on_data(self, data):
+        if self.top_template._contains_text:
+            self.top_node._text += data
+        elif self.strict and not data.isspace():
+            raise ContainsTextError(self, self.top_template._name)
 
-        if self.template_node_stack[-1].contains_text:
-            self.node_stack[-1]._text += data
-        elif not data.isspace():
-            if self.strict:
-                raise ContainsTextError(
-                    self.template_node_stack[-1].name,
-                    self.parser.CurrentLineNumber,
-                    self.parser.CurrentColumnNumber)
+
+    def skip_start(self, name, attrs):
+        self.node_stack.append(name)
+
+    def skip_end(self, name):
+        if self.node_stack.pop() is None:
+            return (self.on_start, self.on_end, self.on_data)
+
+    def skip_data(self, data):
+        pass
 
 
 def parse_xml(template, data, strict=True):
-    parser = SimpleXmlParser(template, strict)
+    parser = HumbleXmlParser(template, strict)
     return parser.parse(data)
 
 
 def suite():
-    import unittest
+    import unittest, doctest
 
     class testTemplate(unittest.TestCase):
+        def testSuccess(self):
+            node = TemplateParser("""
+<root xmlns:parse="http://xml.par.se">
+    <item attr="required" />
+</root>
+""", 'http://xml.par.se')
+            self.assertEqual(node.root.item['attr'], Count.One)
+
+        def testRedefineChildError(self):
+            self.assertRaises(RedefineChildError, TemplateParser, 
+"""<root xmlns:parse="http://xml.par.se">
+  <item/><item/>
+</root>""", 'http://xml.par.se')
+
+
         def testInvalidCountAttributeError(self):
             self.assertRaises(InvalidCountAttributeError, TemplateParser,
 """<root xmlns:parse="http://xml.par.se">
@@ -394,8 +402,13 @@ def suite():
             self.assertEqual(root.stat._text, "a")
 
         def testList(self):
-            root = parse_xml(self.template, """<root><item/></root>""")
+            root = parse_xml(self.template, """<root></root>""")
             self.assertTrue(isinstance(root.item, list))
+            self.assertEqual(len(root.item), 0)
+            root = parse_xml(self.template, """<root><item/></root>""")
+            self.assertEqual(len(root.item), 1)
+            root = parse_xml(self.template, """<root><item/><item/></root>""")
+            self.assertEqual(len(root.item), 2)
 
 
     class testError(unittest.TestCase):
@@ -418,8 +431,8 @@ def suite():
              self.assertRaises(MissingChildrenError,
                 parse_xml, self.template, """<root/>""", False)
         
-        def testMultipleChildError(self):
-             self.assertRaises(MultipleChildError,
+        def testDuplicateChildError(self):
+             self.assertRaises(DuplicateChildError,
                 parse_xml, self.template, """<root><item name='a'/><item name='a'/></root>""", False)
 
 
@@ -444,14 +457,16 @@ def suite():
             self.template = TemplateParser("""<root/>""", 'http://xml.par.se')
 
         def testInvalidAttributes(self):
-            parse_xml(self.template, """<root name="a"/>""", False)
+            root = parse_xml(self.template, """<root name="a"/>""", False)
+            self.assertFalse("name" in root)
 
         def testInvalidChild(self):
-            parse_xml(self.template, """<root><a/></root>""", False)
+            root = parse_xml(self.template, """<root><a><b/></a></root>""", False)
+            self.assertFalse(hasattr(root, 'a'))
 
         def testContainsText(self):
-            parse_xml(self.template, """<root>a</root>""", False)
-
+            root = parse_xml(self.template, """<root>a</root>""", False)
+            self.assertEqual(root._text, "")
 
     return unittest.TestSuite([
         unittest.TestLoader().loadTestsFromTestCase(testTemplate),
@@ -459,11 +474,11 @@ def suite():
         unittest.TestLoader().loadTestsFromTestCase(testError),
         unittest.TestLoader().loadTestsFromTestCase(testStrict),
         unittest.TestLoader().loadTestsFromTestCase(testTolerant),
+        doctest.DocTestSuite(),
     ])
 
 
 if __name__ == "__main__":
     import unittest
     unittest.TextTestRunner(verbosity=2).run(suite())
-
 

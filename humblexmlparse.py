@@ -2,7 +2,7 @@
 
 #   humblexmlparse.py - a variant of simplexmlparse
 #                       <http://evanjones.ca/software/simplexmlparse.html>
-#   Copyright (C) 2010 bhuztez <bhuztez@gmail.com>
+#   Copyright (C) 2010,2011 bhuztez <bhuztez@gmail.com>
 #
 #   This program is free software: you can redistribute it and/or modify
 #   it under the terms of the GNU Affero General Public License as
@@ -22,13 +22,13 @@ A parser parsing XML into python objects, based on simplexmlparse by Evan
 Jones <http://evanjones.ca/software/simplexmlparse.html>
 
 Usage:
-    >>> from humblexmlparse import TemplateParser, parse_xml
-    >>> template = TemplateParser(""" \
-        <root xmlns:parse="http://xml.par.se"> \
-          <item name="required" parse:count="1"/> \
-        </root>""", 'http://xml.par.se')
-    >>> root = parse_xml(template, \
-            """<root><item name='Hello, world!'/></root>""")
+    >>> template = TemplateParser("""
+    ... <root xmlns:parse="http://xml.par.se">
+    ...   <item name="required" parse:count="1"/>
+    ... </root>""", 'http://xml.par.se')
+    >>> root = parse_xml(
+    ...     template,
+    ...     """<root><item name='Hello, world!'/></root>""")
     >>> print root.item["name"]
     Hello, world!
 '''
